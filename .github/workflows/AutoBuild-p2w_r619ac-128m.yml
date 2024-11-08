@@ -29,7 +29,7 @@ on:
   
   ## 定时触发编译(不要删除此行注释)
   schedule:
-    - cron: 0 8 * * 5
+    - cron: 0 19 1 * *
   
   ## 重新点亮 Star 时触发编译(不要删除此行注释)
   #watch:
@@ -49,7 +49,7 @@ env:
 # 上传 bin 文件夹到 Github Artifacts
   UPLOAD_BIN_ARTIFACTS: false
 # 删除无用文件以增加编译空间
-  DELETE_USELESS_FILES: true
+  DELETE_USELESS_FILES: false
 # 删除早期的 workflow 任务
   DELETE_OLD_WORKFLOW: false
 # Cache 加速编译
@@ -64,8 +64,13 @@ jobs:
       issues: write
       pull-requests: write
       contents: write
+      actions: write
 
     steps:
+    - name: Show disk space before optimization
+      run: |
+        echo "Available space before optimization:"
+        df -h
     - name: "Optimize disk space"
       if: env.DELETE_USELESS_FILES == 'true' && !cancelled()
       uses: "hugoalh/disk-space-optimizer-ghaction@v0.8.0"
@@ -88,18 +93,25 @@ jobs:
         npm_clean: "True"
         os_swap: "True"
 
+    - name: Show disk space after first optimization
+      run: |
+        echo "Available space after first optimization:"
+        df -h
     - name: Free up disk space
       if: env.DELETE_USELESS_FILES == 'true' && !cancelled()
-      uses: easimon/maximize-build-space@master
-      with: 
-        root-reserve-mb: 2048
-        swap-size-mb: 1
-        remove-dotnet: 'true'
-        remove-android: 'true'
-        remove-haskell: 'true'
-        remove-codeql: 'true'
-        remove-docker-images: 'true'
-
+      run: |
+        sudo rm -rf /usr/share/dotnet
+        sudo rm -rf /usr/local/lib/android
+        sudo rm -rf /opt/ghc
+        sudo rm -rf "/usr/local/share/boost"
+        sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+        sudo apt-get clean
+        sudo rm -rf /var/lib/apt/lists/*
+        docker images -q | xargs -r docker rmi
+    - name: Show disk space after cleanup
+      run: |
+        echo "Available space after cleanup:"
+        df -h
     - name: Checkout
       uses: actions/checkout@main
       with:
@@ -142,11 +154,12 @@ jobs:
         echo "REPO_BRANCH=$REPO_BRANCH" >> $GITHUB_ENV
         echo "Compile_Date=$(date +%Y%m%d%H%M)" >> $GITHUB_ENV
         echo "Display_Date=$(date +%Y/%m/%d)" >> $GITHUB_ENV
-
     - name: Initialize Environment
       env:
         DEBIAN_FRONTEND: noninteractive
       run: |
+        echo "Available space before environment setup:"
+        df -h
         sudo mkdir -p /workdir
         sudo chown $USER:$GROUPS /workdir
         sudo -E apt update
@@ -155,7 +168,8 @@ jobs:
         sudo -E apt -y autoremove --purge
         sudo -E apt clean
         sudo timedatectl set-timezone "Asia/Shanghai"
-
+        echo "Available space after environment setup:"
+        df -h
     - name: Clone Openwrt Source Code
       run: |
         git clone -b $REPO_BRANCH $REPO_URL openwrt
@@ -163,7 +177,6 @@ jobs:
         cd openwrt
         ./scripts/feeds update -a
         ./scripts/feeds install -a
-
     - name: Accelerate
       if: env.CACHE_ACCELERATE == 'true'
       uses: klever1988/cachewrtbuild@main
@@ -185,35 +198,31 @@ jobs:
             echo -e "\nCONFIG_DEVEL=y\nCONFIG_CCACHE=y\n" >> $GITHUB_WORKSPACE/Configs/$CONFIG_FILE
         fi
         cp $GITHUB_WORKSPACE/Configs/$CONFIG_FILE .config
-        source $GITHUB_WORKSPACE/Scripts/AutoBuild_DiyScript.sh
+        source $GITHUB_WORKSPACE/Scripts/AutoBuild_DiyScript.sh || true
         source $GITHUB_WORKSPACE/Scripts/AutoBuild_Function.sh
         make defconfig
-        Firmware_Diy_Start
+        Firmware_Diy_Start || true
         rm -f .config && cp $GITHUB_WORKSPACE/Configs/$CONFIG_FILE .config
-        Firmware_Diy_Main
-        Firmware_Diy
-        Firmware_Diy_Other
-
+        Firmware_Diy_Main || true
+        Firmware_Diy || true
+        Firmware_Diy_Other || true
     - name: Pre-download Libraries
       run: |
         cd openwrt
         ./scripts/feeds install -a
         make defconfig
         make download -j8
-
     - name: Build OpenWrt
       run: |
         cd openwrt
         make -j4 || make -j1 V=s
         [ "$?" == 0 ] && echo "Compile_Result=true" >> $GITHUB_ENV || echo "Compile_Result=false" >> $GITHUB_ENV
-
     - name: Checkout Firmware
       if: env.Compile_Result == 'true' && !cancelled()
       run: |
         cd openwrt
         source $GITHUB_WORKSPACE/Scripts/AutoBuild_Function.sh
         Firmware_Diy_End
-
     - name: Upload Firmware to Artifacts
       uses: actions/upload-artifact@main
       if: env.UPLOAD_ARTIFACTS == 'true' && env.Compile_Result == 'true' && !cancelled()
@@ -259,3 +268,4 @@ jobs:
       with:
         retain_days: 1
         keep_minimum_runs: 3
+        token: ${{ secrets.GITHUB_TOKEN }}
