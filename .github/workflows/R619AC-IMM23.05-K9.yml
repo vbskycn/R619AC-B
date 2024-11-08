@@ -18,6 +18,8 @@ on:
         description: 'SSH connection to Actions'
         required: false
         default: 'false'
+  schedule:
+    - cron: '0 19 1 * *'  # 每月1日UTC 19:00 (北京时间次日03:00)
   watch:
     types: [started]
     
