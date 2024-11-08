@@ -60,6 +60,8 @@ env:
   FORCE_UNSAFE_CONFIGURE: 1
 # 编译后删除调试信息
   STRIP: true
+# 限制编译线程数
+  COMPILE_THREADS: 2
 ### 结束
 ### 请按需求修改以上内容
 
@@ -189,34 +191,38 @@ jobs:
         sudo rm -rf "$AGENT_TOOLSDIRECTORY"
         sudo rm -rf /usr/share/dotnet
         sudo rm -rf /usr/share/swift
-        
-        # 清理 apt 缓存
-        sudo apt-get clean
-        sudo rm -rf /var/lib/apt/lists/*
+        sudo rm -rf /usr/share/az*
         
         # 清理 Docker 系统
         docker system prune -af
         
-        # 删除大型软件包
+        # 清理 apt 缓存和包
         sudo apt-get update
-        sudo apt-get remove -y ghc* dotnet* llvm* php* azure-cli google-cloud-sdk mongodb-org
-        sudo apt-get autoremove -y
+        sudo apt-get -y purge \
+          azure-cli \
+          '^ghc-.*' \
+          '^dotnet-.*' \
+          '^llvm.*' \
+          '^mono-.*' \
+          '^php.*' \
+          '^ruby.*' \
+          '^mysql.*' \
+          '^postgresql.*' || true
+          
+        sudo apt-get -y autoremove
+        sudo apt-get clean
+        sudo rm -rf /var/lib/apt/lists/*
         
         # 清理临时文件和日志
         sudo rm -rf /tmp/*
         sudo rm -rf /var/tmp/*
         sudo rm -rf /var/log/*
         
-        # 清理 pip 缓存
+        # 清理其他缓存
         sudo rm -rf ~/.cache/pip
+        sudo rm -rf ~/.npm
         
-        # 清理 npm 缓存
-        sudo npm cache clean --force
-        
-        # 压缩 swap
-        sudo swapoff -a
-        sudo swapon -a
-        
+        # 显示清理后的空间
         echo "Available space after cleanup:"
         df -h
         
@@ -224,9 +230,16 @@ jobs:
         echo "Largest directories:"
         sudo du -h /usr --threshold=100M | sort -rh | head -n 10
 
-    - name: Optimize Compilation Settings
+    - name: Additional System Optimization
       run: |
-        # 减少编译时的内存使用
+        # 压缩 swap
+        sudo swapoff -a || true
+        sudo swapon -a || true
+        
+        # 清理日志
+        sudo journalctl --vacuum-time=1d
+        
+        # 设置编译优化
         echo "FORCE_UNSAFE_CONFIGURE=1" >> $GITHUB_ENV
         echo "MAKEFLAGS=-j$(nproc) V=s" >> $GITHUB_ENV
     - name: Clone Openwrt Source Code
@@ -276,7 +289,7 @@ jobs:
       run: |
         cd openwrt
         # 减少并发数，避免内存不足
-        make -j$(nproc --all) || make -j1 V=s
+        make -j${COMPILE_THREADS} || make -j1 V=s
         [ "$?" == 0 ] && echo "Compile_Result=true" >> $GITHUB_ENV || echo "Compile_Result=false" >> $GITHUB_ENV
     - name: Checkout Firmware
       if: env.Compile_Result == 'true' && !cancelled()
